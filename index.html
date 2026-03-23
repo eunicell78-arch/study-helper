@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>🎓 수행평가 도우미</title>
+
+<!-- marked.js for markdown rendering -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+<style>
+/* ===== CSS Variables ===== */
+:root {
+  --bg: #f0f4ff;
+  --surface: #ffffff;
+  --surface2: #f8f9ff;
+  --border: #e0e7ff;
+  --text: #1a1a2e;
+  --text-muted: #6b7280;
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-light: #eef2ff;
+  --secondary: #7c3aed;
+  --success: #059669;
+  --danger: #dc2626;
+  --warning: #d97706;
+  --gradient: linear-gradient(135deg, #4f46e5 0%, #7c3aed 50%, #db2777 100%);
+  --shadow: 0 4px 24px rgba(79,70,229,0.10);
+  --shadow-lg: 0 8px 40px rgba(79,70,229,0.18);
+  --radius: 16px;
+  --radius-sm: 8px;
+}
+[data-theme="dark"] {
+  --bg: #0f0f1a;
+  --surface: #1a1a2e;
+  --surface2: #16213e;
+  --border: #2d2d4e;
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --primary: #818cf8;
+  --primary-hover: #a5b4fc;
+  --primary-light: #1e1b4b;
+  --shadow: 0 4px 24px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 40px rgba(0,0,0,0.6);
+}
+
+/* ===== Reset & Base ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Malgun Gothic', '맑은 고딕', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  transition: background 0.3s, color 0.3s;
+}
+
+/* ===== Password Screen ===== */
+#password-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--gradient);
+  padding: 20px;
+}
+.pw-card {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 48px 40px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+.pw-card .logo { font-size: 3rem; margin-bottom: 12px; }
+.pw-card h1 { font-size: 1.6rem; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.pw-card p { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 28px; }
+.pw-input-wrap { position: relative; margin-bottom: 16px; }
+.pw-input-wrap input {
+  width: 100%;
+  padding: 14px 48px 14px 16px;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 1rem;
+  background: var(--surface2);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.2s;
+}
+.pw-input-wrap input:focus { border-color: var(--primary); }
+.pw-toggle-btn {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer; font-size: 1.1rem; color: var(--text-muted);
+}
+.pw-submit {
+  width: 100%; padding: 14px;
+  background: var(--gradient); color: white;
+  border: none; border-radius: var(--radius-sm);
+  font-size: 1rem; font-weight: 600; cursor: pointer;
+  transition: opacity 0.2s;
+}
+.pw-submit:hover { opacity: 0.9; }
+.pw-error {
+  color: var(--danger); font-size: 0.85rem; margin-top: 8px;
+  display: none;
+}
+
+/* ===== Main App ===== */
+#app { display: none; flex-direction: column; min-height: 100vh; }
+#app.visible { display: flex; }
+
+/* Header */
+.header {
+  background: var(--gradient);
+  color: white;
+  padding: 0 24px;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky; top: 0; z-index: 100;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+}
+.header-left { display: flex; align-items: center; gap: 10px; }
+.header-left .logo { font-size: 1.4rem; }
+.header-left h1 { font-size: 1.1rem; font-weight: 700; }
+.header-actions { display: flex; gap: 8px; }
+.icon-btn {
+  background: rgba(255,255,255,0.15);
+  border: none; border-radius: 8px;
+  padding: 7px 10px; cursor: pointer; color: white;
+  font-size: 0.9rem; transition: background 0.2s;
+}
+.icon-btn:hover { background: rgba(255,255,255,0.25); }
+
+/* Layout */
+.main-layout {
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 0;
+  flex: 1;
+  overflow: hidden;
+  height: calc(100vh - 60px);
+}
+@media (max-width: 900px) {
+  .main-layout { grid-template-columns: 1fr; height: auto; overflow: visible; }
+}
+
+/* Sidebar */
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Cards */
+.card {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px;
+}
+.card-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Form elements */
+label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+input[type="text"], input[type="password"], select, textarea {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+  resize: vertical;
+}
+input[type="text"]:focus, input[type="password"]:focus, select:focus, textarea:focus {
+  border-color: var(--primary);
+}
+.form-group { margin-bottom: 10px; }
+.radio-group { display: flex; gap: 12px; flex-wrap: wrap; }
+.radio-label {
+  display: flex; align-items: center; gap: 6px;
+  cursor: pointer; font-size: 0.9rem; color: var(--text);
+  font-weight: 500;
+}
+.radio-label input { width: auto; }
+
+/* API key section */
+.api-key-row { display: flex; gap: 8px; }
+.api-key-row input { flex: 1; }
+.btn-sm {
+  padding: 8px 12px;
+  border: none; border-radius: var(--radius-sm);
+  cursor: pointer; font-size: 0.8rem; font-weight: 600;
+  white-space: nowrap; transition: all 0.2s;
+}
+.btn-primary { background: var(--primary); color: white; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-danger { background: var(--danger); color: white; }
+.btn-danger:hover { opacity: 0.85; }
+.btn-secondary { background: var(--border); color: var(--text); }
+.btn-secondary:hover { opacity: 0.8; }
+
+/* Submit button */
+.submit-btn {
+  width: 100%;
+  padding: 14px;
+  background: var(--gradient);
+  color: white; border: none;
+  border-radius: var(--radius-sm);
+  font-size: 1rem; font-weight: 700;
+  cursor: pointer; transition: opacity 0.2s;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.submit-btn:hover { opacity: 0.9; }
+.submit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Chat area */
+.chat-area {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--text-muted);
+  gap: 12px;
+  padding: 40px;
+}
+.empty-state .big-icon { font-size: 4rem; }
+.empty-state h2 { font-size: 1.4rem; color: var(--text); }
+.empty-state p { font-size: 0.9rem; max-width: 400px; line-height: 1.6; }
+
+.message {
+  max-width: 100%;
+  animation: fadeIn 0.3s ease;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.message-header {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px; font-size: 0.8rem; color: var(--text-muted);
+}
+.message-avatar {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.8rem; font-weight: 700;
+}
+.user-msg .message-avatar { background: var(--primary); color: white; }
+.ai-msg .message-avatar { background: var(--gradient); color: white; }
+
+.message-body {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 16px 20px;
+  line-height: 1.7;
+  font-size: 0.9rem;
+}
+.user-msg .message-body {
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--text);
+}
+
+/* Markdown styles inside message body */
+.message-body h1, .message-body h2, .message-body h3 {
+  margin: 16px 0 8px; color: var(--text);
+}
+.message-body h2 { font-size: 1.1rem; border-bottom: 2px solid var(--border); padding-bottom: 6px; }
+.message-body h3 { font-size: 1rem; color: var(--primary); }
+.message-body p { margin: 8px 0; }
+.message-body ul, .message-body ol { padding-left: 20px; margin: 8px 0; }
+.message-body li { margin: 4px 0; }
+.message-body table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 0.85rem; overflow-x: auto; display: block; }
+.message-body th { background: var(--primary); color: white; padding: 8px 12px; text-align: left; }
+.message-body td { padding: 7px 12px; border-bottom: 1px solid var(--border); }
+.message-body tr:nth-child(even) td { background: var(--surface2); }
+.message-body code { background: var(--surface2); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; font-family: 'Courier New', monospace; }
+.message-body pre { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 12px 0; }
+.message-body pre code { background: none; padding: 0; }
+.message-body blockquote { border-left: 4px solid var(--primary); padding-left: 16px; margin: 12px 0; color: var(--text-muted); font-style: italic; }
+.message-body a { color: var(--primary); text-decoration: none; }
+.message-body a:hover { text-decoration: underline; }
+.message-body strong { color: var(--text); }
+.message-body hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+
+/* Message actions */
+.message-actions {
+  display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;
+}
+.action-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.78rem; cursor: pointer;
+  transition: all 0.2s; display: flex; align-items: center; gap: 4px;
+}
+.action-btn:hover { border-color: var(--primary); color: var(--primary); }
+
+/* Develop-direction input */
+.develop-row {
+  display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center;
+}
+.develop-row label { margin: 0; font-size: 0.8rem; }
+.develop-row input { width: 60px; padding: 5px 8px; font-size: 0.85rem; }
+.develop-row .btn-sm { font-size: 0.78rem; padding: 6px 12px; border-radius: 20px; }
+
+/* Loading spinner */
+.spinner-wrap {
+  display: flex; align-items: center; gap: 12px;
+  padding: 16px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.spinner {
+  width: 20px; height: 20px;
+  border: 3px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Chat input bar */
+.chat-input-bar {
+  padding: 16px 24px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  display: flex; gap: 10px;
+}
+.chat-input-bar input {
+  flex: 1; padding: 10px 14px;
+  border: 1.5px solid var(--border);
+  border-radius: 24px;
+  background: var(--surface2);
+  color: var(--text); font-size: 0.9rem; outline: none;
+}
+.chat-input-bar input:focus { border-color: var(--primary); }
+.send-btn {
+  padding: 10px 20px;
+  background: var(--gradient); color: white;
+  border: none; border-radius: 24px;
+  font-size: 0.9rem; font-weight: 600; cursor: pointer;
+  transition: opacity 0.2s;
+}
+.send-btn:hover { opacity: 0.9; }
+.send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Status bar */
+.status-bar {
+  font-size: 0.78rem; color: var(--text-muted);
+  padding: 6px 24px;
+  background: var(--surface2);
+  border-top: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  display: inline-block; margin-right: 5px;
+}
+.status-dot.ok { background: var(--success); }
+.status-dot.err { background: var(--danger); }
+
+/* Toast */
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  background: var(--text); color: var(--surface);
+  padding: 12px 20px; border-radius: 8px;
+  font-size: 0.85rem; z-index: 9999;
+  animation: fadeIn 0.3s ease;
+  box-shadow: var(--shadow-lg);
+}
+
+/* ===== Print styles ===== */
+@media print {
+  .header, .sidebar, .chat-input-bar, .status-bar,
+  .message-actions, .develop-row, #password-screen { display: none !important; }
+  .main-layout { grid-template-columns: 1fr; }
+  .chat-area { overflow: visible; }
+  .chat-messages { overflow: visible; }
+  body { background: white !important; color: black !important; }
+  .message-body { border: 1px solid #ddd !important; color: black !important; background: white !important; }
+}
+
+/* ===== Mobile ===== */
+@media (max-width: 600px) {
+  .sidebar { padding: 14px; }
+  .chat-messages { padding: 14px; }
+  .header-left h1 { font-size: 0.95rem; }
+  .pw-card { padding: 32px 20px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     PASSWORD SCREEN
+     ============================================================ -->
+<div id="password-screen">
+  <div class="pw-card">
+    <div class="logo">🎓</div>
+    <h1>수행평가 도우미</h1>
+    <p>이 앱은 비밀번호로 보호되어 있습니다.<br>비밀번호를 입력하여 접속하세요.</p>
+    <form id="pw-form" onsubmit="return checkPassword(event)">
+      <div class="pw-input-wrap">
+        <input type="password" id="pw-input" placeholder="비밀번호 입력" autocomplete="current-password" />
+        <button type="button" class="pw-toggle-btn" onclick="togglePwVisibility()" id="pw-eye">👁️</button>
+      </div>
+      <div class="pw-error" id="pw-error">❌ 비밀번호가 올바르지 않습니다.</div>
+      <button type="submit" class="pw-submit">🔓 입장하기</button>
+    </form>
+  </div>
+</div>
+
+<!-- ============================================================
+     MAIN APP
+     ============================================================ -->
+<div id="app">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <span class="logo">🎓</span>
+      <h1>수행평가 도우미</h1>
+    </div>
+    <div class="header-actions">
+      <button class="icon-btn" onclick="toggleDarkMode()" title="다크/라이트 모드">🌙</button>
+      <button class="icon-btn" onclick="clearHistory()" title="대화 초기화">🗑️</button>
+      <button class="icon-btn" onclick="window.print()" title="PDF로 저장">📄</button>
+    </div>
+  </header>
+
+  <!-- Main layout: sidebar + chat -->
+  <div class="main-layout">
+
+    <!-- Sidebar -->
+    <aside class="sidebar">
+
+      <!-- API Key -->
+      <div class="card">
+        <div class="card-title">🔑 OpenAI API 설정</div>
+        <div class="form-group">
+          <label>API 키</label>
+          <div class="api-key-row">
+            <input type="password" id="api-key-input" placeholder="sk-..." />
+            <button class="btn-sm btn-primary" onclick="saveApiKey()">저장</button>
+            <button class="btn-sm btn-danger" onclick="deleteApiKey()">삭제</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>모델</label>
+          <select id="model-select">
+            <option value="gpt-4o">gpt-4o</option>
+            <option value="gpt-4o-mini">gpt-4o-mini</option>
+            <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+          </select>
+        </div>
+        <div id="api-status" style="font-size:0.8rem;color:var(--text-muted);margin-top:4px;"></div>
+      </div>
+
+      <!-- School type -->
+      <div class="card">
+        <div class="card-title">🏫 학교 유형</div>
+        <select id="school-type">
+          <option value="일반고">일반고</option>
+          <option value="자사고">자사고</option>
+          <option value="국제고">국제고</option>
+          <option value="외국어고">외국어고</option>
+          <option value="영재고">영재고</option>
+          <option value="과학고">과학고</option>
+          <option value="기타">기타</option>
+        </select>
+      </div>
+
+      <!-- Assessment info -->
+      <div class="card">
+        <div class="card-title">📋 수행평가 정보</div>
+        <div class="form-group">
+          <label>과목</label>
+          <input type="text" id="subject" placeholder="예: 사회, 과학, 국어..." />
+        </div>
+        <div class="form-group">
+          <label>주제 또는 범위</label>
+          <input type="text" id="topic" placeholder="예: 기후변화와 지속 가능한 발전" />
+        </div>
+        <div class="form-group">
+          <label>조건/제한사항</label>
+          <textarea id="conditions" rows="3" placeholder="분량, 형식, 마감일 등..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>평가 기준/루브릭 <span style="color:var(--text-muted);font-weight:400">(선택)</span></label>
+          <textarea id="rubric" rows="2" placeholder="평가 기준이 있으면 입력..."></textarea>
+        </div>
+      </div>
+
+      <!-- References -->
+      <div class="card">
+        <div class="card-title">📚 참고자료</div>
+        <div class="form-group">
+          <label>학교 제공 자료 <span style="color:var(--text-muted);font-weight:400">(선택)</span></label>
+          <textarea id="school-material" rows="2" placeholder="학교에서 받은 자료 내용..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>필수 참고자료 <span style="color:var(--text-muted);font-weight:400">(선택)</span></label>
+          <textarea id="required-ref" rows="2" placeholder="필수로 포함해야 할 자료..."></textarea>
+        </div>
+        <div class="form-group">
+          <label>관심 키워드 <span style="color:var(--text-muted);font-weight:400">(선택)</span></label>
+          <input type="text" id="keywords" placeholder="예: AI, 환경, 청소년..." />
+        </div>
+      </div>
+
+      <!-- Mode -->
+      <div class="card">
+        <div class="card-title">🌐 수행평가 모드</div>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" name="mode" value="korean" checked />
+            🇰🇷 국문 모드
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="mode" value="english" />
+            🇺🇸 영어 모드
+          </label>
+        </div>
+      </div>
+
+      <!-- Submit -->
+      <button class="submit-btn" onclick="startResearch()" id="submit-btn">
+        🔍 수행평가 분석 시작
+      </button>
+
+    </aside>
+
+    <!-- Chat area -->
+    <div class="chat-area">
+      <div class="chat-messages" id="chat-messages">
+        <div class="empty-state" id="empty-state">
+          <div class="big-icon">🎓</div>
+          <h2>수행평가 도우미에 오신 것을 환영합니다!</h2>
+          <p>왼쪽에 학교 유형, 과목, 주제 등을 입력하고<br>
+          <strong>수행평가 분석 시작</strong> 버튼을 누르면<br>
+          맞춤 주제 방향과 자료를 추천해드립니다. 📚</p>
+          <p style="margin-top:8px;font-size:0.8rem">
+            📄 논문 5개 이상 · 📰 기사 5개 이상 · 🏛️ 공공자료 5개 이상<br>
+            🎥 유튜브 3개 이상 · 🌐 기타 2개 이상 (총 20개+)
+          </p>
+        </div>
+      </div>
+
+      <!-- Follow-up input -->
+      <div class="chat-input-bar">
+        <input type="text" id="followup-input"
+          placeholder="후속 질문을 입력하세요... (예: 방향 2를 더 발전시켜줘)"
+          onkeydown="if(event.key==='Enter' && !event.shiftKey) sendFollowup()" />
+        <button class="send-btn" onclick="sendFollowup()" id="send-btn">전송</button>
+      </div>
+
+      <!-- Status bar -->
+      <div class="status-bar">
+        <span id="status-text">준비됨</span>
+        <span id="msg-count">대화 0건</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ============================================================
+// CONFIG — change the password here
+// ============================================================
+const APP_PASSWORD = 'study2026';
+
+// ============================================================
+// SYSTEM PROMPT
+// ============================================================
+const SYSTEM_PROMPT = `당신은 고등학교 수행평가 전문 리서치 어시스턴트입니다.
+학생이 수행평가 보고서를 스스로 작성할 수 있도록, 방향 제시와 신뢰할 수 있는 자료 수집만을 목적으로 합니다.
+절대로 보고서 전체를 대필하지 않습니다.
+
+학교 유형별 차별화:
+- 일반고: 교과 연계 + 실생활 적용, 기본~중급 자료
+- 자사고: 심화 분석 + 비판적 사고, 중급~고급 자료
+- 국제고: 글로벌 이슈 + 다문화 관점, 국제기구 자료 활용
+- 외국어고: 언어·문화 융합 + 원문 자료, 외국 원문 비교
+- 영재고: 학문적 깊이 + 연구 방법론, 논문 기반 접근
+- 과학고: 과학적 탐구 + 데이터 기반, 실험 설계 + 통계 분석
+
+응답 시 반드시 포함할 내용:
+1. 주제 방향 5개 이상 (각각 핵심 아이디어, 탐구 질문, 추천 보고서 구조, 난이도, 장점, 주의점 포함)
+2. 자료 추천 20개 이상 (모든 자료에 출처 URL 표시):
+   - 📄 학술논문 (KCI, RISS, DBpia 등): 5개 이상
+   - 📰 신문기사 (조선, 중앙, 한겨레, 경향 등): 5개 이상
+   - 🏛️ 공공기관 자료 (정부부처, 연구원, 통계청 등): 5개 이상
+   - 🎥 유튜브 영상 (강의, 다큐, 전문가 인터뷰): 3개 이상
+   - 🌐 기타 신뢰 가능한 출처: 2개 이상
+3. 최신 자료 우선 (최근 5년 이내, 2021~2026년)
+4. 표절 주의 안내
+
+영어 수행평가 모드인 경우:
+- 영어 키워드와 영문 표현 예시 포함
+- 영어 학술논문 3개 이상, 영어 신문기사 3개 이상, 영어 유튜브/TED 영상 2개 이상 추가
+- 유용한 영어 표현/문장 패턴 제공`;
+
+// ============================================================
+// STATE
+// ============================================================
+let conversationHistory = [];
+let isLoading = false;
+
+// ============================================================
+// PASSWORD
+// ============================================================
+function checkPassword(e) {
+  e.preventDefault();
+  const val = document.getElementById('pw-input').value;
+  if (val === APP_PASSWORD) {
+    document.getElementById('password-screen').style.display = 'none';
+    document.getElementById('app').classList.add('visible');
+    loadApiKey();
+  } else {
+    document.getElementById('pw-error').style.display = 'block';
+    document.getElementById('pw-input').value = '';
+  }
+  return false;
+}
+
+function togglePwVisibility() {
+  const inp = document.getElementById('pw-input');
+  const btn = document.getElementById('pw-eye');
+  if (inp.type === 'password') { inp.type = 'text'; btn.textContent = '🙈'; }
+  else { inp.type = 'password'; btn.textContent = '👁️'; }
+}
+
+// ============================================================
+// API KEY
+// ============================================================
+function saveApiKey() {
+  const key = document.getElementById('api-key-input').value.trim();
+  if (!key) { showToast('API 키를 입력하세요.'); return; }
+  localStorage.setItem('openai_api_key', key);
+  showToast('✅ API 키가 저장되었습니다.');
+  updateApiStatus();
+}
+
+function deleteApiKey() {
+  localStorage.removeItem('openai_api_key');
+  document.getElementById('api-key-input').value = '';
+  showToast('🗑️ API 키가 삭제되었습니다.');
+  updateApiStatus();
+}
+
+function loadApiKey() {
+  const key = localStorage.getItem('openai_api_key') || '';
+  if (key) {
+    document.getElementById('api-key-input').value = key;
+  }
+  updateApiStatus();
+}
+
+function getApiKey() {
+  return document.getElementById('api-key-input').value.trim()
+    || localStorage.getItem('openai_api_key') || '';
+}
+
+function updateApiStatus() {
+  const key = getApiKey();
+  const el = document.getElementById('api-status');
+  if (key) {
+    el.innerHTML = '<span style="color:var(--success)">✅ API 키 설정됨</span>';
+  } else {
+    el.innerHTML = '<span style="color:var(--warning)">⚠️ API 키 미설정</span>';
+  }
+}
+
+// ============================================================
+// DARK MODE
+// ============================================================
+function toggleDarkMode() {
+  const html = document.documentElement;
+  const isDark = html.getAttribute('data-theme') === 'dark';
+  html.setAttribute('data-theme', isDark ? 'light' : 'dark');
+  document.querySelector('.icon-btn[title="다크/라이트 모드"]').textContent = isDark ? '🌙' : '☀️';
+}
+
+// ============================================================
+// BUILD USER MESSAGE
+// ============================================================
+function buildUserMessage() {
+  const school = document.getElementById('school-type').value;
+  const subject = document.getElementById('subject').value.trim();
+  const topic = document.getElementById('topic').value.trim();
+  const conditions = document.getElementById('conditions').value.trim();
+  const rubric = document.getElementById('rubric').value.trim();
+  const schoolMaterial = document.getElementById('school-material').value.trim();
+  const requiredRef = document.getElementById('required-ref').value.trim();
+  const keywords = document.getElementById('keywords').value.trim();
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+
+  if (!subject || !topic) {
+    showToast('⚠️ 과목과 주제는 필수 입력입니다.'); return null;
+  }
+
+  let msg = `📋 **수행평가 분석 요청**\n\n`;
+  msg += `- **학교 유형**: ${school}\n`;
+  msg += `- **과목**: ${subject}\n`;
+  msg += `- **주제/범위**: ${topic}\n`;
+  if (conditions) msg += `- **조건/제한사항**: ${conditions}\n`;
+  if (rubric) msg += `- **평가 기준(루브릭)**: ${rubric}\n`;
+  if (schoolMaterial) msg += `- **학교 제공 자료**: ${schoolMaterial}\n`;
+  if (requiredRef) msg += `- **필수 참고자료**: ${requiredRef}\n`;
+  if (keywords) msg += `- **관심 키워드**: ${keywords}\n`;
+  msg += `- **모드**: ${mode === 'english' ? '🇺🇸 영어 수행평가 모드' : '🇰🇷 국문 수행평가 모드'}\n\n`;
+  msg += `위 정보를 바탕으로 수행평가 주제 방향 5개 이상과 공신력 있는 자료 20개 이상(논문 5개+, 신문기사 5개+, 공공기관 5개+, 유튜브 3개+, 기타 2개+, 모든 URL 포함)을 추천해주세요.`;
+
+  if (mode === 'english') {
+    msg += `\n영어 수행평가 모드이므로 영어 자료와 표현도 포함해주세요.`;
+  }
+
+  return msg;
+}
+
+// ============================================================
+// START RESEARCH
+// ============================================================
+async function startResearch() {
+  const userMsg = buildUserMessage();
+  if (!userMsg) return;
+  const apiKey = getApiKey();
+  if (!apiKey) { showToast('⚠️ OpenAI API 키를 먼저 입력해주세요.'); return; }
+
+  conversationHistory = [];
+  removeEmptyState();
+  await sendToAI(userMsg, apiKey);
+}
+
+// ============================================================
+// FOLLOW-UP
+// ============================================================
+async function sendFollowup() {
+  const input = document.getElementById('followup-input');
+  const text = input.value.trim();
+  if (!text) return;
+  if (isLoading) return;
+  const apiKey = getApiKey();
+  if (!apiKey) { showToast('⚠️ OpenAI API 키를 먼저 입력해주세요.'); return; }
+
+  input.value = '';
+  removeEmptyState();
+  await sendToAI(text, apiKey);
+}
+
+// ============================================================
+// SEND TO AI (streaming)
+// ============================================================
+async function sendToAI(userMsg, apiKey) {
+  if (isLoading) return;
+  isLoading = true;
+  setLoading(true);
+
+  // Add to history
+  conversationHistory.push({ role: 'user', content: userMsg });
+
+  // Show user message
+  addMessageToUI('user', userMsg);
+
+  // Show loading
+  const loadingId = 'loading-' + Date.now();
+  addLoadingToUI(loadingId);
+
+  const model = document.getElementById('model-select').value;
+  const messages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    ...conversationHistory
+  ];
+
+  let fullResponse = '';
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: true,
+        max_tokens: 4096
+      })
+    });
+
+    if (!response.ok) {
+      let errMsg = `HTTP ${response.status}`;
+      try { const j = await response.json(); errMsg = j.error?.message || errMsg; } catch (_) {}
+      throw new Error(errMsg);
+    }
+
+    // Remove loading
+    document.getElementById(loadingId)?.remove();
+
+    // Create AI message element for streaming
+    const aiMsgId = 'ai-' + Date.now();
+    const aiMsgEl = createAiMessageElement(aiMsgId);
+    document.getElementById('chat-messages').appendChild(aiMsgEl);
+    scrollToBottom();
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const chunk = decoder.decode(value, { stream: true });
+      const lines = chunk.split('\n');
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6);
+        if (data === '[DONE]') continue;
+        try {
+          const parsed = JSON.parse(data);
+          const delta = parsed.choices?.[0]?.delta?.content || '';
+          if (delta) {
+            fullResponse += delta;
+            updateAiMessageElement(aiMsgId, fullResponse);
+            scrollToBottom();
+          }
+        } catch (parseErr) {
+          console.debug('SSE chunk parse skip:', parseErr.message);
+        }
+      }
+    }
+
+    // Add action buttons
+    addActionButtons(aiMsgId, fullResponse);
+
+    // Update conversation history
+    conversationHistory.push({ role: 'assistant', content: fullResponse });
+    updateMsgCount();
+    setStatus('응답 완료 ✅', false);
+
+  } catch (err) {
+    document.getElementById(loadingId)?.remove();
+    const errTxt = `⚠️ **오류 발생**: ${err.message}\n\n- API 키가 올바른지 확인하세요.\n- 네트워크 연결을 확인하세요.\n- 사용량 한도를 확인하세요.`;
+    addMessageToUI('ai', errTxt, true);
+    setStatus('오류 발생 ❌', true);
+  } finally {
+    isLoading = false;
+    setLoading(false);
+  }
+}
+
+// ============================================================
+// DEVELOP DIRECTION
+// ============================================================
+async function developDirection(dirNum) {
+  const apiKey = getApiKey();
+  if (!apiKey) { showToast('⚠️ API 키를 먼저 입력해주세요.'); return; }
+  if (!dirNum) { showToast('⚠️ 방향 번호를 입력하세요.'); return; }
+  const msg = `방향 ${dirNum}에 대해 더 발전시켜주세요. 해당 방향에 대한 심화 자료 5개 이상을 추가로 검색하고, 세부 소주제 3개 이상을 제안해주세요.`;
+  await sendToAI(msg, apiKey);
+}
+
+// ============================================================
+// UI HELPERS
+// ============================================================
+function removeEmptyState() {
+  const el = document.getElementById('empty-state');
+  if (el) el.remove();
+}
+
+function addMessageToUI(role, content, isError = false) {
+  const container = document.getElementById('chat-messages');
+  const el = document.createElement('div');
+  el.className = `message ${role === 'user' ? 'user-msg' : 'ai-msg'}`;
+
+  const header = document.createElement('div');
+  header.className = 'message-header';
+  const avatar = document.createElement('div');
+  avatar.className = 'message-avatar';
+  avatar.textContent = role === 'user' ? '👤' : '🤖';
+  const name = document.createElement('span');
+  name.textContent = role === 'user' ? '학생' : 'AI 도우미';
+  header.appendChild(avatar);
+  header.appendChild(name);
+
+  const body = document.createElement('div');
+  body.className = 'message-body';
+  body.innerHTML = marked.parse(content);
+
+  el.appendChild(header);
+  el.appendChild(body);
+  container.appendChild(el);
+  scrollToBottom();
+}
+
+function createAiMessageElement(id) {
+  const el = document.createElement('div');
+  el.className = 'message ai-msg';
+  el.id = id;
+
+  const header = document.createElement('div');
+  header.className = 'message-header';
+  const avatar = document.createElement('div');
+  avatar.className = 'message-avatar';
+  avatar.textContent = '🤖';
+  const name = document.createElement('span');
+  name.textContent = 'AI 도우미';
+  header.appendChild(avatar);
+  header.appendChild(name);
+
+  const body = document.createElement('div');
+  body.className = 'message-body';
+  body.id = id + '-body';
+
+  el.appendChild(header);
+  el.appendChild(body);
+  return el;
+}
+
+function updateAiMessageElement(id, content) {
+  const body = document.getElementById(id + '-body');
+  if (body) body.innerHTML = marked.parse(content);
+}
+
+function addActionButtons(id, content) {
+  const el = document.getElementById(id);
+  if (!el) return;
+
+  const actions = document.createElement('div');
+  actions.className = 'message-actions';
+
+  // Copy button
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'action-btn';
+  copyBtn.innerHTML = '📋 결과 복사';
+  copyBtn.onclick = () => copyContent(content);
+  actions.appendChild(copyBtn);
+
+  // PDF button
+  const pdfBtn = document.createElement('button');
+  pdfBtn.className = 'action-btn';
+  pdfBtn.innerHTML = '📄 PDF로 저장';
+  pdfBtn.onclick = () => window.print();
+  actions.appendChild(pdfBtn);
+
+  // Develop direction
+  const devRow = document.createElement('div');
+  devRow.className = 'develop-row';
+  devRow.innerHTML = `
+    <span style="font-size:0.8rem;color:var(--text-muted)">방향</span>
+    <input type="number" id="dir-num-${id}" min="1" max="10" value="1" />
+    <button class="btn-sm btn-primary" onclick="developDirection(document.getElementById('dir-num-${id}').value)">
+      🚀 이 방향 더 발전시키기
+    </button>
+  `;
+  actions.appendChild(devRow);
+
+  el.appendChild(actions);
+}
+
+function addLoadingToUI(id) {
+  const container = document.getElementById('chat-messages');
+  const el = document.createElement('div');
+  el.id = id;
+  el.className = 'message ai-msg';
+  el.innerHTML = `
+    <div class="message-header">
+      <div class="message-avatar">🤖</div>
+      <span>AI 도우미</span>
+    </div>
+    <div class="spinner-wrap">
+      <div class="spinner"></div>
+      <span style="color:var(--text-muted);font-size:0.9rem">AI가 분석 중입니다... (최대 1~2분 소요)</span>
+    </div>
+  `;
+  container.appendChild(el);
+  scrollToBottom();
+}
+
+function scrollToBottom() {
+  const container = document.getElementById('chat-messages');
+  container.scrollTop = container.scrollHeight;
+}
+
+function copyContent(text) {
+  navigator.clipboard.writeText(text).then(() => {
+    showToast('✅ 클립보드에 복사되었습니다!');
+  }).catch(() => {
+    // Fallback (deprecated execCommand — only used when Clipboard API is unavailable)
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy'); // eslint-disable-line
+    document.body.removeChild(ta);
+    showToast('✅ 복사되었습니다! (구형 브라우저 방식)');
+  });
+}
+
+function setLoading(state) {
+  document.getElementById('submit-btn').disabled = state;
+  document.getElementById('send-btn').disabled = state;
+  if (state) setStatus('🤖 AI 응답 대기 중...', false);
+}
+
+function setStatus(text, isError) {
+  const el = document.getElementById('status-text');
+  el.textContent = text;
+  el.style.color = isError ? 'var(--danger)' : 'var(--text-muted)';
+}
+
+function updateMsgCount() {
+  document.getElementById('msg-count').textContent = `대화 ${Math.floor(conversationHistory.length / 2)}건`;
+}
+
+function clearHistory() {
+  if (!confirm('대화를 초기화하시겠습니까?')) return;
+  conversationHistory = [];
+  const container = document.getElementById('chat-messages');
+  container.innerHTML = `
+    <div class="empty-state" id="empty-state">
+      <div class="big-icon">🎓</div>
+      <h2>수행평가 도우미에 오신 것을 환영합니다!</h2>
+      <p>왼쪽에 학교 유형, 과목, 주제 등을 입력하고<br>
+      <strong>수행평가 분석 시작</strong> 버튼을 누르면<br>
+      맞춤 주제 방향과 자료를 추천해드립니다. 📚</p>
+    </div>
+  `;
+  updateMsgCount();
+  setStatus('준비됨', false);
+}
+
+function showToast(msg) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+// ============================================================
+// ENTER KEY on password input
+// ============================================================
+document.getElementById('pw-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') checkPassword(e);
+});
+</script>
+
+</body>
+</html>
