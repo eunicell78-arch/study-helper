@@ -872,7 +872,9 @@ async function sendToAI(userMsg, apiKey) {
             updateAiMessageElement(aiMsgId, fullResponse);
             scrollToBottom();
           }
-        } catch (_) {}
+        } catch (parseErr) {
+          console.debug('SSE chunk parse skip:', parseErr.message);
+        }
       }
     }
 
@@ -1032,14 +1034,14 @@ function copyContent(text) {
   navigator.clipboard.writeText(text).then(() => {
     showToast('✅ 클립보드에 복사되었습니다!');
   }).catch(() => {
-    // Fallback
+    // Fallback (deprecated execCommand — only used when Clipboard API is unavailable)
     const ta = document.createElement('textarea');
     ta.value = text;
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand('copy');
+    document.execCommand('copy'); // eslint-disable-line
     document.body.removeChild(ta);
-    showToast('✅ 복사되었습니다!');
+    showToast('✅ 복사되었습니다! (구형 브라우저 방식)');
   });
 }
 
