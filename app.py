@@ -1,5 +1,5 @@
 import streamlit as st
-from openai import OpenAI
+import anthropic
 
 st.set_page_config(
     page_title="🎓 수행평가 도우미",
@@ -85,8 +85,43 @@ def check_password() -> bool:
     return False
 
 
+def extract_file_text(uploaded_file) -> str:
+    """Extract text content from an uploaded file."""
+    name = uploaded_file.name
+    ext = name.rsplit(".", 1)[-1].lower()
+
+    if ext == "txt":
+        return uploaded_file.read().decode("utf-8", errors="replace")
+
+    if ext == "pdf":
+        try:
+            import PyPDF2
+            reader = PyPDF2.PdfReader(uploaded_file)
+            pages = [page.extract_text() or "" for page in reader.pages]
+            return "\n".join(pages)
+        except Exception as e:
+            return f"[PDF 파일 '{name}' – 텍스트 추출 실패: {e}]"
+
+    if ext == "docx":
+        try:
+            import docx
+            doc = docx.Document(uploaded_file)
+            return "\n".join(p.text for p in doc.paragraphs)
+        except Exception as e:
+            return f"[DOCX 파일 '{name}' – 텍스트 추출 실패: {e}]"
+
+    if ext == "hwp":
+        return f"[HWP 파일 '{name}' – 직접 파싱이 어려워 파일명만 전달됩니다]"
+
+    if ext in ("png", "jpg", "jpeg"):
+        return f"[이미지 파일 '{name}' – 텍스트 추출 불가, 파일명만 전달됩니다]"
+
+    return f"[파일 '{name}' – 지원되지 않는 형식]"
+
+
 def build_user_message(school, subject, topic, conditions, rubric,
-                        school_material, required_ref, keywords, mode) -> str:
+                        school_material, required_ref, keywords, mode,
+                        attached_texts: list | None = None) -> str:
     """Compose the user message for the first research request."""
     msg = "📋 **수행평가 분석 요청**\n\n"
     msg += f"- **학교 유형**: {school}\n"
@@ -109,23 +144,36 @@ def build_user_message(school, subject, topic, conditions, rubric,
     )
     if mode == "english":
         msg += "\n영어 수행평가 모드이므로 영어 자료와 표현도 포함해주세요."
+    if attached_texts:
+        msg += "\n\n---\n**첨부 자료 내용:**\n"
+        for item in attached_texts:
+            msg += f"\n{item}\n"
     return msg
 
 
-def stream_response(client: OpenAI, model: str, messages: list) -> str:
+def stream_response(client: anthropic.Anthropic, model: str, messages: list) -> str:
     """Stream the AI response and return the full text."""
     full_text = ""
+    # Separate system message from conversation messages (Anthropic API format)
+    system_content = ""
+    conv_messages = []
+    for m in messages:
+        if m["role"] == "system":
+            system_content = m["content"]
+        else:
+            conv_messages.append({"role": m["role"], "content": m["content"]})
+
     with st.chat_message("assistant"):
         placeholder = st.empty()
-        stream = client.chat.completions.create(
+        with client.messages.stream(
             model=model,
-            messages=messages,
-            stream=True,
-        )
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
-            full_text += delta
-            placeholder.markdown(full_text + "▌")
+            max_tokens=4096,
+            system=system_content,
+            messages=conv_messages,
+        ) as stream:
+            for text in stream.text_stream:
+                full_text += text
+                placeholder.markdown(full_text + "▌")
         placeholder.markdown(full_text)
     return full_text
 
@@ -152,11 +200,11 @@ with st.sidebar:
     st.caption("AI 기반 리서치 어시스턴트")
     st.divider()
 
-    # Model selection (admin-facing; API key is hidden)
+    # Model selection
     st.subheader("⚙️ AI 모델 설정")
     model = st.selectbox(
         "모델 선택",
-        ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"],
+        ["claude-sonnet-4-20250514", "claude-3-5-haiku-20241022", "claude-3-5-sonnet-20241022"],
         index=0,
     )
     st.divider()
@@ -202,6 +250,16 @@ with st.sidebar:
         "관심 키워드 (선택)",
         placeholder="예: 청소년, 환경, 정책",
     )
+    uploaded_files = st.file_uploader(
+        "파일 첨부 (선택)",
+        type=["pdf", "txt", "docx", "hwp", "png", "jpg", "jpeg"],
+        accept_multiple_files=True,
+        help="PDF, TXT, DOCX, HWP, PNG, JPG 파일을 첨부할 수 있습니다.",
+    )
+    if uploaded_files:
+        st.caption(f"📎 첨부된 파일 ({len(uploaded_files)}개):")
+        for f in uploaded_files:
+            st.caption(f"  • {f.name}")
     st.divider()
 
     # Mode
@@ -236,17 +294,17 @@ st.caption(
 )
 
 # ──────────────────────────────────────────────
-# LOAD OPENAI CLIENT
+# LOAD ANTHROPIC CLIENT
 # ──────────────────────────────────────────────
-api_key = get_secret("OPENAI_API_KEY")
+api_key = get_secret("ANTHROPIC_API_KEY")
 if not api_key:
     st.error(
-        "⚠️ OpenAI API 키가 설정되지 않았습니다. "
-        "Streamlit Secrets에서 `OPENAI_API_KEY`를 설정해주세요."
+        "⚠️ Anthropic API 키가 설정되지 않았습니다. "
+        "Streamlit Secrets에서 `ANTHROPIC_API_KEY`를 설정해주세요."
     )
     st.stop()
 
-client = OpenAI(api_key=api_key)
+client = anthropic.Anthropic(api_key=api_key)
 
 # ──────────────────────────────────────────────
 # DISPLAY CHAT HISTORY
@@ -268,9 +326,17 @@ if start_btn:
     if not subject or not topic:
         st.warning("⚠️ 과목과 주제는 필수 입력입니다.")
     else:
+        # Extract text from uploaded files
+        attached_texts = []
+        if uploaded_files:
+            for f in uploaded_files:
+                text = extract_file_text(f)
+                attached_texts.append(f"[{f.name}]\n{text}")
+
         user_msg = build_user_message(
             school, subject, topic, conditions, rubric,
             school_material, required_ref, keywords, mode,
+            attached_texts=attached_texts if attached_texts else None,
         )
         # Reset history for a fresh research session
         st.session_state["messages"] = []

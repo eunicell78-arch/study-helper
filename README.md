@@ -2,7 +2,7 @@
 
 고등학교 수행평가를 준비하는 학생들을 위한 **AI 기반 리서치 도우미** 웹앱입니다.  
 **Streamlit** 앱으로 구현되어 있으며, Streamlit Community Cloud에 무료로 배포할 수 있습니다.  
-OpenAI API 키는 Streamlit Secrets로 안전하게 관리되므로 사용자에게 노출되지 않습니다.
+Anthropic API 키는 Streamlit Secrets로 안전하게 관리되므로 사용자에게 노출되지 않습니다.
 
 ---
 
@@ -11,10 +11,11 @@ OpenAI API 키는 Streamlit Secrets로 안전하게 관리되므로 사용자에
 | 기능 | 설명 |
 |------|------|
 | 🔒 비밀번호 보호 | 단일 공용 비밀번호로 접근 제어 (Secrets로 관리) |
-| 🤖 OpenAI API 연동 | 관리자 API 키로 GPT-4o 등 사용 (사용자에게 미노출) |
+| 🤖 Anthropic Claude 연동 | 관리자 API 키로 Claude 모델 사용 (사용자에게 미노출) |
 | 🏫 학교 유형별 맞춤 | 일반고/자사고/국제고/외고/영재고/과학고 차별화 |
 | 📌 주제 방향 5개+ | 학교 유형·과목·조건에 맞는 방향 제시 |
 | 📚 자료 20개+ 추천 | 논문·기사·공공자료·유튜브·기타 (URL 포함) |
+| 📎 파일 첨부 | PDF, TXT, DOCX, HWP, PNG/JPG 첨부 후 AI에 전달 |
 | ⚡ 스트리밍 응답 | 실시간 AI 응답 표시 |
 | 🚀 방향 심화 | "이 방향 더 발전시키기" 클릭으로 심화 분석 |
 | 💬 채팅 히스토리 | 이전 대화 맥락 유지, 후속 질문 가능 |
@@ -34,7 +35,7 @@ OpenAI API 키는 Streamlit Secrets로 안전하게 관리되므로 사용자에
 4. **Advanced settings → Secrets** 에 아래 내용을 붙여넣습니다:
 
 ```toml
-OPENAI_API_KEY = "sk-your-actual-api-key"
+ANTHROPIC_API_KEY = "sk-ant-your-actual-api-key"
 APP_PASSWORD = "study2026"
 ```
 
@@ -42,6 +43,8 @@ APP_PASSWORD = "study2026"
 6. 배포 완료 후 제공된 URL로 접속하면 됩니다.
 
 > ⚠️ `secrets.toml` 파일은 절대 저장소에 커밋하지 마세요. `.gitignore`에 이미 추가되어 있습니다.
+
+> Anthropic API 키는 [console.anthropic.com](https://console.anthropic.com)에서 발급받을 수 있습니다.
 
 ---
 
@@ -67,7 +70,7 @@ streamlit run app.py
 
 | 항목 | 설명 | 기본값 |
 |------|------|--------|
-| `OPENAI_API_KEY` | OpenAI API 키 ([발급](https://platform.openai.com/api-keys)) | 없음 (필수) |
+| `ANTHROPIC_API_KEY` | Anthropic API 키 ([발급](https://console.anthropic.com)) | 없음 (필수) |
 | `APP_PASSWORD` | 앱 접속 비밀번호 | `study2026` |
 
 ---
@@ -83,7 +86,8 @@ streamlit run app.py
 2. **과목**과 **주제/범위** 입력 (필수)
 3. **조건/제한사항**, **평가 기준** 입력 (선택)
 4. **학교 제공 자료**, **필수 참고자료**, **관심 키워드** 입력 (선택)
-5. 수행평가 모드 선택: 🇰🇷 국문 / 🇺🇸 영어
+5. **파일 첨부** (선택): PDF, TXT, DOCX, HWP, PNG, JPG 파일을 첨부하면 AI가 내용을 참고합니다.
+6. 수행평가 모드 선택: 🇰🇷 국문 / 🇺🇸 영어
 
 ### 3단계: 분석 시작
 - **🔍 수행평가 분석 시작** 버튼 클릭
@@ -94,6 +98,16 @@ streamlit run app.py
 - 하단 입력창에서 후속 질문도 가능합니다.
 
 ---
+
+## 📎 파일 첨부 지원 형식
+
+| 형식 | 처리 방식 |
+|------|----------|
+| **TXT** | 텍스트 직접 읽기 |
+| **PDF** | PyPDF2로 텍스트 추출 |
+| **DOCX** | python-docx로 텍스트 추출 |
+| **HWP** | 파일명만 전달 (직접 파싱 제한) |
+| **PNG / JPG / JPEG** | 파일명만 전달 (이미지 텍스트 추출 불가) |
 
 ---
 
@@ -140,7 +154,9 @@ MIT License — 자유롭게 사용, 수정, 배포하실 수 있습니다.
 ## 🛠️ 기술 스택
 
 - [Streamlit](https://streamlit.io/) — Python 웹앱 프레임워크
-- [OpenAI Python SDK](https://github.com/openai/openai-python) — Chat Completions API (스트리밍)
+- [Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python) — Claude Messages API (스트리밍)
+- [PyPDF2](https://pypdf2.readthedocs.io/) — PDF 텍스트 추출
+- [python-docx](https://python-docx.readthedocs.io/) — DOCX 텍스트 추출
 - Streamlit Community Cloud — 무료 배포 및 Secrets 관리
 
 ---
@@ -164,3 +180,4 @@ study-helper/
 ## 📄 라이선스
 
 MIT License — 자유롭게 사용, 수정, 배포하실 수 있습니다.
+
