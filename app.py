@@ -16,7 +16,7 @@ st.set_page_config(
 # CONSTANTS
 # ──────────────────────────────────────────────
 MIN_SOURCES = 2                # default minimum sources per evaluation element
-URL_TIMEOUT = 5                # seconds for HTTP validation requests
+URL_TIMEOUT = 10               # seconds for HTTP validation requests
 API_TIMEOUT = 30               # seconds for LLM API calls
 API_RETRIES = 2                # retry count for transient failures
 EASYOCR_MIN_CONFIDENCE = 0.3  # minimum EasyOCR confidence to include a text block
@@ -418,7 +418,12 @@ def is_domain_trusted(domain: str) -> bool:
 
 
 def validate_url(url: str) -> bool:
-    """Return True if URL passes domain check + HTTP validation."""
+    """Return True if URL passes domain check + HTTP validation.
+
+    Always performs an actual HTTP request (HEAD then GET fallback) even for
+    trusted domains, so that blocked/empty search-result pages are excluded.
+    403 responses are treated as failures regardless of domain trust.
+    """
     try:
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
@@ -426,10 +431,28 @@ def validate_url(url: str) -> bool:
             return False
         if is_domain_blocked(domain):
             return False
-        if is_domain_trusted(domain):
-            return True
         headers = {"User-Agent": "Mozilla/5.0 (compatible; StudyHelper/1.0)"}
-        resp = requests.head(url, headers=headers, timeout=URL_TIMEOUT, allow_redirects=True)
+        # HEAD request first (lightweight)
+        try:
+            resp = requests.head(
+                url, headers=headers, timeout=URL_TIMEOUT, allow_redirects=True
+            )
+            if resp.status_code == 403:
+                return False
+            if 200 <= resp.status_code < 400:
+                return True
+            # HEAD returned a non-2xx/3xx code (e.g. 405 Method Not Allowed)
+            # fall through to GET fallback
+        except requests.RequestException:
+            pass  # HEAD failed entirely → try GET
+        # GET fallback – stream to avoid downloading the full body
+        resp = requests.get(
+            url, headers=headers, timeout=URL_TIMEOUT,
+            allow_redirects=True, stream=True,
+        )
+        resp.close()
+        if resp.status_code == 403:
+            return False
         return 200 <= resp.status_code < 400
     except Exception:
         return False
@@ -471,23 +494,72 @@ def parse_min_sources(text: str) -> int:
     return max_found
 
 
-def make_a_layer_sources(element_verbatim: str, count: int) -> list:
+def build_search_query(subject: str, topic: str, element_verbatim: str) -> str:
     """
-    Generate A-layer search result URLs for an element.
-    Always returns `count` sources using RISS/KCI/Scholar/DBpia templates.
+    Build a clean, keyword-focused search query from evaluation element text.
+
+    Strips evaluation-style sentence endings and format/quantity constraints,
+    then combines subject + topic + extracted keywords (max ~80 chars).
     """
-    q = quote_plus(element_verbatim[:80])  # keep query at a reasonable length
-    sources = []
+    text = element_verbatim
+    # Remove Korean evaluation-style sentence endings (e.g. 했는가, 서술하였는가)
+    text = re.sub(
+        r'(했는가|하였는가|서술하였는가|제시하였는가|있는가|했나|하였나|'
+        r'되었는가|되었나|였는가|인가|였나|하는가|하였나|포함하였는가|'
+        r'활용하였는가|분석하였는가|설명하였는가|논하였는가)[?？.]*',
+        '', text,
+    )
+    # Remove format/quantity constraints (e.g. 3개 이상, 최소 800자, (500자 이내))
+    text = re.sub(r'\d+\s*(개|가지|건|자|줄|문장)\s*(이상|이내|이하|내외)', '', text)
+    text = re.sub(r'최소\s*\d+\s*(개|자|줄)', '', text)
+    text = re.sub(r'\(\s*\d+\s*(자|글자|단어)\s*(이상|이내|이하|내외)?\s*\)', '', text)
+    # Remove date/citation hints that pollute search
+    text = re.sub(r'(연도|날짜|출처|참고문헌)\s*포함', '', text)
+    # Remove parentheses containing only whitespace/punctuation (residue from above)
+    text = re.sub(r'\([^\w가-힣]*\)', '', text)
+    # Collapse remaining punctuation/whitespace
+    text = re.sub(r'[,;·:]+', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip().rstrip('.,·-')
+    # Combine: subject + topic + up to 50 chars of cleaned keywords
+    keywords = text[:50].strip()
+    query = f"{subject} {topic} {keywords}".strip()
+    # Hard cap at 80 chars, breaking on a word boundary where possible
+    if len(query) > 80:
+        truncated = query[:80]
+        last_space = truncated.rfind(' ')
+        query = truncated[:last_space] if last_space > 0 else truncated
+    return query
+
+
+def make_a_layer_sources(
+    element_verbatim: str,
+    subject: str = "",
+    topic: str = "",
+) -> list:
+    """
+    Generate A-layer search result URL candidates for an element.
+
+    Uses a clean keyword query (via build_search_query) instead of raw
+    verbatim text, so search result pages are actually populated.
+    Returns one candidate per template in SEARCH_TEMPLATES.
+    The caller is responsible for validating URLs and cycling through
+    the returned candidates to meet the required source count.
+    """
+    query_text = build_search_query(subject, topic, element_verbatim)
+    q = quote_plus(query_text)
+    short = element_verbatim[:30]
+    suffix = "…" if len(element_verbatim) > 30 else ""
     templates = list(SEARCH_TEMPLATES)
-    for i in range(count):
-        site_name, template = templates[i % len(templates)]
+    sources = []
+    for site_name, template in templates:
         url = template.format(q=q)
-        short = element_verbatim[:30]
-        suffix = "…" if len(element_verbatim) > 30 else ""
         sources.append({
             "title": f"{short}{suffix} — {site_name}",
             "url": url,
-            "usage": f"이 요소에 관한 자료를 {site_name}에서 검색하여 보고서에 활용합니다.",
+            "usage": (
+                f"이 요소에 관한 자료를 {site_name}에서 검색하여 보고서에 활용합니다. "
+                f"(검색어: {query_text[:40]}{'…' if len(query_text) > 40 else ''})"
+            ),
             "type": "검색결과",
             "layer": "A",
         })
@@ -1031,16 +1103,55 @@ elif st.session_state["app_step"] == "generating":
             final_results = []
 
             # A-layer: build template search URLs for each element (no LLM needed)
+            subject = inputs.get("subject", "")
+            topic = inputs.get("topic", "")
+            element_data = []
+            all_candidate_urls: set = set()
+
             for el in elements:
                 verbatim = el.get("verbatim", "")
                 min_src = el.get("min_sources", MIN_SOURCES)
-                checklist = el.get("checklist", [])
-                a_sources = make_a_layer_sources(verbatim, max(min_src, MIN_SOURCES))
-                final_results.append({
+                required = max(min_src, MIN_SOURCES)
+                candidates = make_a_layer_sources(verbatim, subject, topic)
+                element_data.append({
                     "verbatim": verbatim,
-                    "sources": a_sources,
-                    "checklist": checklist,
                     "min_sources": min_src,
+                    "required": required,
+                    "checklist": el.get("checklist", []),
+                    "candidates": candidates,
+                })
+                for s in candidates:
+                    all_candidate_urls.add(s["url"])
+
+            # Validate all unique A-layer URLs in one parallel batch
+            validity = (
+                validate_urls_parallel(list(all_candidate_urls))
+                if all_candidate_urls else {}
+            )
+
+            for ed in element_data:
+                candidates = ed["candidates"]
+                required = ed["required"]
+                # Keep only sources whose URL passed validation
+                valid_sources = [
+                    s for s in candidates if validity.get(s["url"], False)
+                ]
+                if not valid_sources:
+                    # All failed (e.g. network blocked in Streamlit Cloud) –
+                    # fall back to unvalidated candidates so the user still gets
+                    # links, but mark them so they can be distinguished in the UI.
+                    valid_sources = [
+                        {**s, "unvalidated": True} for s in candidates
+                    ]
+                # Cycle through valid sources to satisfy required count
+                result_sources = [
+                    valid_sources[i % len(valid_sources)] for i in range(required)
+                ]
+                final_results.append({
+                    "verbatim": ed["verbatim"],
+                    "sources": result_sources,
+                    "checklist": ed["checklist"],
+                    "min_sources": ed["min_sources"],
                 })
 
             # Generate outlines via LLM
@@ -1173,7 +1284,10 @@ elif st.session_state["app_step"] == "results":
             url = src.get("url", "#")
             usage = src.get("usage", "")
             layer_tag = " *(직링크)*" if src.get("layer") == "B" else ""
-            st.markdown(f"- **자료 {i}**{layer_tag}: [{title}]({url})")
+            unvalidated_tag = " ⚠️" if src.get("unvalidated") else ""
+            st.markdown(f"- **자료 {i}**{layer_tag}{unvalidated_tag}: [{title}]({url})")
+            if src.get("unvalidated"):
+                st.caption("  ⚠️ 링크 검증 불가 (네트워크 제한). 클릭 후 결과를 직접 확인하세요.")
             if usage:
                 st.markdown(f"  → 활용 방식: {usage}")
             result_output += f"- 자료 {i}: {title} ({url})\n"
