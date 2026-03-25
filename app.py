@@ -154,21 +154,31 @@ OUTLINE_SYSTEM = """당신은 수행평가 개요 작성 전문가입니다.
 ..."""
 
 B_LAYER_SYSTEM = """당신은 학술 자료 검색 전문가입니다.
-다음 평가요소에 대해 직접 접근 가능한 공신력 있는 URL을 5개 제시해주세요.
+다음 평가요소와 과목/주제에 대해 직접 접근 가능한 공신력 있는 원문 URL을 5개 제시해주세요.
 반드시 순수 JSON만 반환 (마크다운 코드블록 없이):
 {
   "sources": [
     {
-      "title": "자료 제목",
+      "title": "자료 제목 (주제와 관련된 정확한 제목)",
       "url": "https://실제직접URL",
       "usage": "이 자료 활용 방법 (1문장)"
     }
   ]
 }
-규칙:
-- 블로그, 나무위키, 개인 사이트 절대 금지
-- RISS, DBpia, KCI, 정부기관(.go.kr/.re.kr/.or.kr), 국제기구, 주요언론 사이트만
-- URL이 실제 존재하는지 확신이 없으면 포함하지 말 것"""
+우선 순위 도메인 (이 순서로 우선):
+1. doi.org (DOI 직링크, 가장 안정적)
+2. .go.kr, .ac.kr (한국 정부/대학 공식 사이트)
+3. icj-cij.org, pca-cpa.org, un.org, who.int, oecd.org (국제기구)
+4. pubmed.ncbi.nlm.nih.gov, ncbi.nlm.nih.gov (의학/과학)
+5. 주요 학술지 공식 사이트 (nature.com, sciencedirect.com 등)
+
+제한 사항:
+- 블로그, 나무위키, 개인 사이트, SNS 절대 금지
+- KCI/DBpia/RISS/KISS 상세페이지 직링크는 URL 구조가 복잡하고 오류가 많으므로 포함하지 말 것
+  (KCI/DBpia/RISS/KISS는 검색결과 페이지는 OK, 상세페이지(/view/ /detail/ /article/ 포함 URL 금지)
+- URL이 평가요소/주제와 직접 관련된 자료인지 반드시 확인할 것
+- URL이 실제 존재하는지 확신이 없으면 포함하지 말 것
+- 제목이 과목/주제/평가요소 키워드와 무관하면 포함하지 말 것"""
 
 
 # ──────────────────────────────────────────────
@@ -468,6 +478,252 @@ def validate_urls_parallel(urls: list) -> dict:
                 results[url] = future.result()
             except Exception:
                 results[url] = False
+    return results
+
+
+# ── B-layer: page-title extraction and relevance checking ──
+
+def fetch_page_title(url: str) -> str | None:
+    """Fetch the HTML title/og:title/meta description from a URL.
+
+    Downloads at most 200 KB of the response body using stream=True to
+    avoid heavy bandwidth usage.  Parses with simple regex (no external
+    HTML parser dependency).  Returns a combined text string of all
+    extracted metadata, or None on any failure.
+    """
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+        resp = requests.get(
+            url, headers=headers, timeout=URL_TIMEOUT,
+            allow_redirects=True, stream=True,
+        )
+        if resp.status_code not in range(200, 400):
+            return None
+        # Read at most 200 KB
+        chunks = []
+        total = 0
+        for chunk in resp.iter_content(chunk_size=8192):
+            chunks.append(chunk)
+            total += len(chunk)
+            if total >= 200 * 1024:
+                break
+        resp.close()
+        raw = b"".join(chunks)
+        # Try common encodings
+        for enc in ("utf-8", "euc-kr", "cp949", "latin-1"):
+            try:
+                html = raw.decode(enc)
+                break
+            except (UnicodeDecodeError, LookupError):
+                continue
+        else:
+            html = raw.decode("utf-8", errors="replace")
+
+        parts = []
+        # <title>…</title>
+        m = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        if m:
+            parts.append(re.sub(r"\s+", " ", m.group(1)).strip())
+        # og:title
+        m = re.search(
+            r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+            html, re.IGNORECASE,
+        )
+        if m:
+            parts.append(m.group(1).strip())
+        # meta name=title / description
+        for name in ("title", "description"):
+            m = re.search(
+                rf'<meta[^>]+name=["\'](?:og:)?{name}["\'][^>]+content=["\']([^"\']+)["\']',
+                html, re.IGNORECASE,
+            )
+            if m:
+                parts.append(m.group(1).strip())
+        return " ".join(parts) if parts else None
+    except Exception:
+        return None
+
+
+def _extract_keywords(subject: str, topic: str, element_verbatim: str) -> list[str]:
+    """Extract meaningful Korean/English keywords for relevance matching."""
+    combined = f"{subject} {topic} {element_verbatim}"
+    # Split on whitespace and common punctuation (single middle-dot U+00B7 included)
+    tokens = re.split(r"[\s,;·:()\[\]{}/\\|]+", combined)
+    stopwords = {
+        "이상", "이하", "이내", "이상의", "이하의", "포함", "사용", "활용", "작성",
+        "제시", "서술", "설명", "분석", "논하", "했는가", "하였는가", "있는가",
+        "개", "가지", "건", "자", "줄", "문장", "최소", "및", "또는", "그리고",
+        "에서", "에게", "에서의", "에게서", "이", "을", "를", "의", "와", "과",
+        "은", "는", "이다", "한다", "하다", "the", "a", "an", "of", "in",
+        "and", "or", "for", "to", "with", "by", "on", "at", "from",
+    }
+    keywords = []
+    for tok in tokens:
+        tok = tok.strip()
+        if len(tok) >= 2 and tok not in stopwords:
+            keywords.append(tok.lower())
+    # Remove duplicates while preserving order
+    seen = set()
+    result = []
+    for kw in keywords:
+        if kw not in seen:
+            seen.add(kw)
+            result.append(kw)
+    return result
+
+
+def is_relevant(
+    page_text: str | None,
+    subject: str,
+    topic: str,
+    element_verbatim: str,
+) -> bool:
+    """Return True when the page_text contains enough keyword overlap.
+
+    Rule:
+    - At least 1 keyword from *topic* AND 1 keyword from *element_verbatim*
+      must appear in page_text, OR
+    - At least 2 keywords from the combined keyword list must appear.
+
+    Substring matching is intentional: Korean morphology means "독도" should
+    match "독도의", "독도를", etc. in page titles.
+
+    Returns False if page_text is None (cannot fetch) — callers should
+    treat None page_text as 'unverified' rather than 'rejected'.
+    """
+    if page_text is None:
+        return False
+    text_lower = page_text.lower()
+
+    topic_kws = _extract_keywords("", topic, "")
+    elem_kws = _extract_keywords("", "", element_verbatim)
+    all_kws = _extract_keywords(subject, topic, element_verbatim)
+
+    topic_hits = sum(1 for kw in topic_kws if kw in text_lower)
+    elem_hits = sum(1 for kw in elem_kws if kw in text_lower)
+    total_hits = sum(1 for kw in all_kws if kw in text_lower)
+
+    return (topic_hits >= 1 and elem_hits >= 1) or total_hits >= 2
+
+
+# link_status values: "verified" | "unverified" | "rejected"
+
+def validate_url_status(
+    url: str,
+    subject: str = "",
+    topic: str = "",
+    element_verbatim: str = "",
+) -> str:
+    """Return a 3-state validation status for a B-layer direct link.
+
+    - "rejected"  : blocked domain, clear 4xx/5xx, or relevance check failed
+    - "unverified": network/bot-blocking prevented full check (403/429/timeout),
+                    or relevance could not be determined
+    - "verified"  : accessible (2xx/3xx) + relevance confirmed
+    """
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        if not domain:
+            return "rejected"
+        if is_domain_blocked(domain):
+            return "rejected"
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+        }
+
+        # --- Accessibility check (HEAD → GET fallback) ---
+        accessible = False
+        bot_blocked = False
+        try:
+            resp = requests.head(
+                url, headers=headers, timeout=URL_TIMEOUT, allow_redirects=True
+            )
+            if resp.status_code in (403, 429):
+                bot_blocked = True
+            elif 200 <= resp.status_code < 400:
+                accessible = True
+            # Other non-2xx → fall through to GET
+        except requests.RequestException:
+            pass  # HEAD failed → try GET
+
+        if not accessible and not bot_blocked:
+            # GET fallback (also used for relevance body fetch)
+            try:
+                resp = requests.get(
+                    url, headers=headers, timeout=URL_TIMEOUT,
+                    allow_redirects=True, stream=True,
+                )
+                if resp.status_code in (403, 429):
+                    bot_blocked = True
+                elif 400 <= resp.status_code < 600:
+                    resp.close()
+                    return "rejected"
+                elif 200 <= resp.status_code < 400:
+                    accessible = True
+                resp.close()
+            except requests.RequestException:
+                # Total network failure → unverified (may work from browser)
+                return "unverified"
+
+        if bot_blocked:
+            # Site blocks server-side requests; treat as unverified
+            return "unverified"
+
+        if not accessible:
+            return "rejected"
+
+        # --- Relevance check ---
+        if not (subject or topic or element_verbatim):
+            # No keywords available → cannot judge relevance
+            return "verified"
+
+        page_text = fetch_page_title(url)
+        if page_text is None:
+            # Could not read title (possibly JS-rendered or bot-blocked)
+            return "unverified"
+
+        if is_relevant(page_text, subject, topic, element_verbatim):
+            return "verified"
+        else:
+            return "rejected"
+
+    except Exception:
+        return "unverified"
+
+
+def validate_url_statuses_parallel(
+    urls: list,
+    subject: str = "",
+    topic: str = "",
+    element_verbatim: str = "",
+) -> dict:
+    """Run validate_url_status for all urls in parallel.  Returns {url: status}."""
+    results = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_url = {
+            executor.submit(validate_url_status, url, subject, topic, element_verbatim): url
+            for url in urls
+        }
+        for future in as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                results[url] = future.result()
+            except Exception:
+                results[url] = "unverified"
     return results
 
 
@@ -1222,21 +1478,23 @@ elif st.session_state["app_step"] == "results":
 
     # ── B-layer toggle ──
     b_layer_on = st.toggle(
-        "🔍 원문 직링크 더 찾기 (B 레이어, 기본 OFF)",
-        value=False,
-        help="LLM이 직접 접근 가능한 URL 후보를 생성한 뒤 링크 검증을 거쳐 추가합니다.",
+        "🔍 원문 직링크 찾기 (B 레이어)",
+        value=True,
+        help="LLM이 직접 접근 가능한 URL 후보를 생성한 뒤 관련성까지 검증하여 추가합니다. verified(✅) 링크만 기본 표시, unverified(⚠️)는 별도 섹션에 표시합니다.",
         key="b_layer_toggle",
     )
 
     if b_layer_on:
-        if st.button("🔄 B 레이어 직링크 생성", type="secondary"):
-            with st.spinner("🔍 직링크 후보 생성 및 검증 중..."):
+        if st.button("🔄 직링크 생성 (B 레이어)", type="secondary"):
+            with st.spinner("🔍 직링크 후보 생성 및 관련성 검증 중..."):
+                subject = inputs.get("subject", "")
+                topic = inputs.get("topic", "")
                 for item in final_results:
                     verbatim = item["verbatim"]
                     b_msg = (
                         f"평가요소: {verbatim}\n\n"
-                        f"과목: {inputs.get('subject', '')}, "
-                        f"주제: {inputs.get('topic', '')}"
+                        f"과목: {subject}, "
+                        f"주제: {topic}"
                     )
                     try:
                         raw = call_ai(
@@ -1248,12 +1506,20 @@ elif st.session_state["app_step"] == "results":
                         b_data = parse_json_response(raw)
                         b_candidates = b_data.get("sources", [])
                         b_urls = [s.get("url", "") for s in b_candidates if s.get("url")]
-                        validity = validate_urls_parallel(b_urls) if b_urls else {}
+                        statuses = (
+                            validate_url_statuses_parallel(b_urls, subject, topic, verbatim)
+                            if b_urls else {}
+                        )
                         for src in b_candidates:
                             url = src.get("url", "")
-                            if url and validity.get(url, False):
-                                src["layer"] = "B"
-                                item["sources"].append(src)
+                            if not url:
+                                continue
+                            status = statuses.get(url, "unverified")
+                            if status == "rejected":
+                                continue
+                            src["layer"] = "B"
+                            src["link_status"] = status
+                            item["sources"].append(src)
                     except Exception:
                         pass
             st.session_state["final_results"] = final_results
@@ -1275,24 +1541,60 @@ elif st.session_state["app_step"] == "results":
         verbatim = item["verbatim"]
         sources = item["sources"]
         checklist = item.get("checklist", [])
+        min_src = item.get("min_sources", MIN_SOURCES)
 
         st.markdown(f"### 📌 {verbatim}")
         result_output += f"[{verbatim}]\n"
 
-        for i, src in enumerate(sources, 1):
+        # Split sources into display buckets in a single pass
+        verified_b, unverified_b, a_sources = [], [], []
+        for s in sources:
+            if s.get("layer") == "B":
+                if s.get("link_status") == "verified":
+                    verified_b.append(s)
+                else:
+                    unverified_b.append(s)
+            else:
+                a_sources.append(s)
+
+        # Main list: verified B-layer first, then A-layer backup to fill min_sources
+        needed_from_a = max(0, min_src - len(verified_b))
+        a_fill = a_sources[:needed_from_a] if needed_from_a > 0 else []
+        # If no verified B links at all, show all A-layer
+        if not verified_b:
+            a_fill = a_sources
+
+        main_sources = verified_b + a_fill
+
+        for i, src in enumerate(main_sources, 1):
             title = src.get("title", "자료")
             url = src.get("url", "#")
             usage = src.get("usage", "")
-            layer_tag = " *(직링크)*" if src.get("layer") == "B" else ""
-            unvalidated_tag = " ⚠️" if src.get("unvalidated") else ""
+            is_direct = src.get("layer") == "B"
+            is_unvalidated = src.get("unvalidated", False)
+
+            layer_tag = " *(직링크)*" if is_direct else ""
+            unvalidated_tag = " ⚠️" if is_unvalidated else ""
             st.markdown(f"- **자료 {i}**{layer_tag}{unvalidated_tag}: [{title}]({url})")
-            if src.get("unvalidated"):
+            if is_unvalidated:
                 st.caption("  ⚠️ 링크 검증 불가 (네트워크 제한). 클릭 후 결과를 직접 확인하세요.")
             if usage:
                 st.markdown(f"  → 활용 방식: {usage}")
             result_output += f"- 자료 {i}: {title} ({url})\n"
             if usage:
                 result_output += f"  → 활용 방식: {usage}\n"
+
+        # Unverified B-layer: show in collapsible section
+        if unverified_b:
+            with st.expander(f"⚠️ 검증불가 직링크 {len(unverified_b)}개 (브라우저에서 직접 확인 필요)", expanded=False):
+                st.caption("아래 링크는 서버 환경 제한(봇 차단 등)으로 자동 검증이 불가했습니다. 브라우저에서 직접 열어 확인하세요.")
+                for src in unverified_b:
+                    title = src.get("title", "자료")
+                    url = src.get("url", "#")
+                    usage = src.get("usage", "")
+                    st.markdown(f"- ⚠️ **검증불가(브라우저에서 확인)**: [{title}]({url})")
+                    if usage:
+                        st.markdown(f"  → 활용 방식: {usage}")
 
         if checklist:
             st.markdown("✔ **체크리스트:**")
