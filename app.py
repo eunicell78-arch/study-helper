@@ -3,6 +3,7 @@ import requests
 import json
 import re
 import io
+import time
 from urllib.parse import urlparse, quote_plus
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -17,7 +18,7 @@ st.set_page_config(
 # ──────────────────────────────────────────────
 MIN_SOURCES = 2                # default minimum sources per evaluation element
 URL_TIMEOUT = 10               # seconds for HTTP validation requests
-API_TIMEOUT = 30               # seconds for LLM API calls
+API_TIMEOUT = 90               # seconds for LLM API calls
 API_RETRIES = 2                # retry count for transient failures
 EASYOCR_MIN_CONFIDENCE = 0.3  # minimum EasyOCR confidence to include a text block
 
@@ -231,7 +232,10 @@ def _call_openai(system: str, user_msg: str, api_key: str) -> str:
     for attempt in range(API_RETRIES + 1):
         try:
             resp = requests.post(
-                PROVIDER_ENDPOINTS["OpenAI"], headers=headers, json=body, timeout=API_TIMEOUT
+                PROVIDER_ENDPOINTS["OpenAI"],
+                headers=headers,
+                json=body,
+                timeout=(10, API_TIMEOUT),
             )
             if resp.status_code != 200:
                 raise ValueError(_friendly_http_error(resp.status_code, "OpenAI"))
@@ -240,6 +244,8 @@ def _call_openai(system: str, user_msg: str, api_key: str) -> str:
             raise
         except Exception as e:
             last_exc = e
+            if attempt < API_RETRIES:
+                time.sleep(2 ** attempt)
     raise ValueError(f"OpenAI 연결 오류: {last_exc}")
 
 
