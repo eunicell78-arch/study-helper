@@ -180,6 +180,30 @@ B_LAYER_SYSTEM = """당신은 학술 자료 검색 전문가입니다.
 - URL이 실제 존재하는지 확신이 없으면 포함하지 말 것
 - 제목이 과목/주제/평가요소 키워드와 무관하면 포함하지 말 것"""
 
+RESEARCH_GUIDE_SYSTEM = """당신은 수행평가 평가요소별 리서치 가이드를 생성하는 전문가입니다.
+주어진 평가요소에 대해 아래 JSON만 반환하세요 (마크다운 코드블록 없이, 순수 JSON):
+{
+  "need_summary": "이 평가요소가 요구하는 주장/설명/증명(한글 1~2문장)",
+  "material_types": ["필요한 자료 유형 1(한글)", "유형 2", "유형 3"],
+  "recommended_sources": [
+    {"name": "출처 카테고리(한글)", "why": "왜 필요한지(한글 1문장)"}
+  ],
+  "search_queries_ko": ["한글 키워드/어구 쿼리 1", "쿼리 2", "쿼리 3"]
+}
+규칙:
+- need_summary: 한글 1~2문장, 이 요소 충족 위해 무엇을 증명/설명해야 하는지
+- material_types: 한글만, 3~5개 (예: "정부/국제기구 공식자료", "학술논문", "통계/사례")
+- recommended_sources: name/why 모두 한글, 2~4개
+- search_queries_ko: 한글 키워드/짧은 어구만, 6~10개, 문장 금지"""
+
+EN_QUERIES_SYSTEM = """영문 검색어 전문가입니다.
+주어진 수행평가 평가요소에 대한 영문 학술 검색어를 생성하세요.
+아래 JSON만 반환하세요 (마크다운 코드블록 없이, 순수 JSON):
+{"search_queries_en": ["English query 1", "query 2", "query 3"]}
+규칙:
+- 영문만, 2~4개, 짧은 키워드/어구
+- 학술/공식 자료 검색에 적합한 표현"""
+
 
 # ──────────────────────────────────────────────
 # PROVIDER REST HELPERS
@@ -791,17 +815,22 @@ def make_a_layer_sources(
     element_verbatim: str,
     subject: str = "",
     topic: str = "",
+    search_queries_ko: list | None = None,
 ) -> list:
     """
     Generate A-layer search result URL candidates for an element.
 
-    Uses a clean keyword query (via build_search_query) instead of raw
-    verbatim text, so search result pages are actually populated.
+    Prefers search_queries_ko (top 1–2 items) when available so that search
+    result pages use the LLM-recommended Korean keywords.  Falls back to
+    build_search_query(subject, topic, element_verbatim) when search_queries_ko
+    is empty or not provided.
+
     Returns one candidate per template in SEARCH_TEMPLATES.
-    The caller is responsible for validating URLs and cycling through
-    the returned candidates to meet the required source count.
     """
-    query_text = build_search_query(subject, topic, element_verbatim)
+    if search_queries_ko:
+        query_text = search_queries_ko[0]
+    else:
+        query_text = build_search_query(subject, topic, element_verbatim)
     q = quote_plus(query_text)
     short = element_verbatim[:30]
     suffix = "…" if len(element_verbatim) > 30 else ""
@@ -832,6 +861,77 @@ def parse_json_response(text: str) -> dict:
     return json.loads(text.strip())
 
 
+def safe_get_list(data: dict, key: str) -> list:
+    """Safely extract a list value from a dict, returning [] on missing/wrong type."""
+    val = data.get(key, [])
+    return val if isinstance(val, list) else []
+
+
+def make_research_guide_for_element(
+    element_verbatim: str,
+    subject: str,
+    topic: str,
+    provider: str,
+    api_key: str,
+) -> dict:
+    """Call LLM to generate a Korean-first research guide for one evaluation element.
+
+    Returns a dict with keys: need_summary, material_types, recommended_sources,
+    search_queries_ko, search_queries_en.  On any failure returns a minimal
+    fallback dict so the app never crashes.
+    """
+    user_msg = (
+        f"과목: {subject}\n"
+        f"주제: {topic}\n"
+        f"평가요소: {element_verbatim}\n\n"
+        "위 평가요소에 대한 리서치 가이드 JSON을 생성하세요."
+    )
+    try:
+        raw = call_ai(provider, RESEARCH_GUIDE_SYSTEM, user_msg, api_key)
+        guide = parse_json_response(raw)
+        if not isinstance(guide.get("need_summary"), str) or not guide.get("need_summary"):
+            guide["need_summary"] = f"{element_verbatim[:60]}에 필요한 자료를 수집하세요."
+        for key in ("material_types", "recommended_sources", "search_queries_ko"):
+            if not isinstance(guide.get(key), list):
+                guide[key] = []
+        guide.setdefault("search_queries_en", [])
+        return guide
+    except Exception:
+        return {
+            "need_summary": f"{element_verbatim[:60]}에 필요한 자료를 수집하세요.",
+            "material_types": ["관련 학술자료", "공식 통계/보고서", "신문기사"],
+            "recommended_sources": [{"name": "학술DB(RISS/KCI)", "why": "관련 연구 자료 확인용"}],
+            "search_queries_ko": [f"{subject} {topic}"] if (subject or topic) else [],
+            "search_queries_en": [],
+        }
+
+
+def make_en_queries_for_element(
+    element_verbatim: str,
+    subject: str,
+    topic: str,
+    provider: str,
+    api_key: str,
+) -> list:
+    """Generate English search queries for one evaluation element.
+
+    Returns a list of English query strings, or [] on failure.
+    """
+    user_msg = (
+        f"과목: {subject}\n"
+        f"주제: {topic}\n"
+        f"평가요소: {element_verbatim}\n\n"
+        "영문 검색어 2~4개를 JSON으로 생성하세요."
+    )
+    try:
+        raw = call_ai(provider, EN_QUERIES_SYSTEM, user_msg, api_key)
+        data = parse_json_response(raw)
+        queries = data.get("search_queries_en", [])
+        return queries if isinstance(queries, list) else []
+    except Exception:
+        return []
+
+
 def _clear_element_edit_keys() -> None:
     """Remove all element-editing session-state keys (el_edit_*)."""
     for k in list(st.session_state.keys()):
@@ -855,6 +955,7 @@ _defaults = {
     "ocr_raw_text":   "",
     "ocr_image_name": "",
     "ocr_method":     "",
+    "research_guides": {},  # {element_verbatim: guide_dict} — cached per run
 }
 for _k, _v in _defaults.items():
     if _k not in st.session_state:
@@ -1049,6 +1150,7 @@ with st.sidebar:
                 "app_step", "elements", "saved_inputs",
                 "final_results", "outline_text",
                 "ocr_raw_text", "ocr_image_name", "ocr_method",
+                "research_guides",
             ):
                 st.session_state[_k] = _defaults[_k]
             _clear_element_edit_keys()
@@ -1354,13 +1456,24 @@ elif st.session_state["app_step"] == "generating":
     inputs = st.session_state["saved_inputs"]
     elements = st.session_state["elements"]
 
-    with st.spinner("📚 자료를 생성하고 개요를 작성하는 중... (잠시 기다려주세요)"):
+    with st.spinner("📚 리서치 가이드 생성 및 자료 추천 중... (잠시 기다려주세요)"):
         try:
             final_results = []
-
-            # A-layer: build template search URLs for each element (no LLM needed)
             subject = inputs.get("subject", "")
             topic = inputs.get("topic", "")
+
+            # ── Step 3a: Generate research guides (Korean-only) for each element ──
+            research_guides: dict = {}
+            for el in elements:
+                verbatim = el.get("verbatim", "")
+                guide = make_research_guide_for_element(
+                    verbatim, subject, topic,
+                    st.session_state["provider"],
+                    st.session_state["api_key"],
+                )
+                research_guides[verbatim] = guide
+
+            # ── Step 3b: Build A-layer URLs using search_queries_ko from guides ──
             element_data = []
             all_candidate_urls: set = set()
 
@@ -1368,7 +1481,9 @@ elif st.session_state["app_step"] == "generating":
                 verbatim = el.get("verbatim", "")
                 min_src = el.get("min_sources", MIN_SOURCES)
                 required = max(min_src, MIN_SOURCES)
-                candidates = make_a_layer_sources(verbatim, subject, topic)
+                guide = research_guides.get(verbatim, {})
+                sq_ko = safe_get_list(guide, "search_queries_ko")
+                candidates = make_a_layer_sources(verbatim, subject, topic, sq_ko or None)
                 element_data.append({
                     "verbatim": verbatim,
                     "min_sources": min_src,
@@ -1431,6 +1546,7 @@ elif st.session_state["app_step"] == "generating":
                 st.session_state["api_key"],
             )
 
+            st.session_state["research_guides"] = research_guides
             st.session_state["final_results"] = final_results
             st.session_state["outline_text"] = outline_text
             st.session_state["app_step"] = "results"
@@ -1476,14 +1592,48 @@ elif st.session_state["app_step"] == "results":
 
     st.divider()
 
-    # ── B-layer toggle ──
-    b_layer_on = st.toggle(
-        "🔍 원문 직링크 찾기 (B 레이어)",
-        value=True,
-        help="LLM이 직접 접근 가능한 URL 후보를 생성한 뒤 관련성까지 검증하여 추가합니다. verified(✅) 링크만 기본 표시, unverified(⚠️)는 별도 섹션에 표시합니다.",
-        key="b_layer_toggle",
-    )
+    # ── Global toggles row ──
+    tog_col1, tog_col2 = st.columns(2)
+    with tog_col1:
+        include_en = st.toggle(
+            "🌐 해외 자료도 찾기(영문 검색어 포함)",
+            value=False,
+            help="ON 시 각 평가요소에 영문 검색어(2~4개)를 추가 생성합니다. 기본은 한글 검색어만 제공합니다.",
+            key="include_en_toggle",
+        )
+    with tog_col2:
+        b_layer_on = st.toggle(
+            "🔍 원문 직링크 찾기 (B 레이어)",
+            value=True,
+            help="LLM이 직접 접근 가능한 URL 후보를 생성한 뒤 관련성까지 검증하여 추가합니다.",
+            key="b_layer_toggle",
+        )
 
+    # ── Generate English queries when toggle is turned ON ──
+    research_guides: dict = st.session_state.get("research_guides", {})
+    if include_en:
+        needs_en = [
+            item["verbatim"]
+            for item in final_results
+            if not safe_get_list(research_guides.get(item["verbatim"], {}), "search_queries_en")
+        ]
+        if needs_en:
+            with st.spinner("🌐 영문 검색어 생성 중..."):
+                for verbatim in needs_en:
+                    en_qs = make_en_queries_for_element(
+                        verbatim,
+                        inputs.get("subject", ""),
+                        inputs.get("topic", ""),
+                        st.session_state["provider"],
+                        st.session_state["api_key"],
+                    )
+                    guide = research_guides.get(verbatim, {})
+                    guide["search_queries_en"] = en_qs
+                    research_guides[verbatim] = guide
+            st.session_state["research_guides"] = research_guides
+            st.rerun()
+
+    # ── B-layer direct-link generation ──
     if b_layer_on:
         if st.button("🔄 직링크 생성 (B 레이어)", type="secondary"):
             with st.spinner("🔍 직링크 후보 생성 및 관련성 검증 중..."):
@@ -1529,7 +1679,7 @@ elif st.session_state["app_step"] == "results":
 
     # ── Section 1: material recommendations ──
     st.subheader("📚 1. 평가요소별 자료 추천")
-    st.caption(f"총 {len(final_results)}개 평가요소 | A레이어(검색결과 URL) 기본 제공")
+    st.caption(f"총 {len(final_results)}개 평가요소 | 리서치 가이드 → 검색어 → 링크(부록) 순으로 제공")
 
     result_output = (
         f"# 수행평가 자료 추천 결과\n\n"
@@ -1542,11 +1692,53 @@ elif st.session_state["app_step"] == "results":
         sources = item["sources"]
         checklist = item.get("checklist", [])
         min_src = item.get("min_sources", MIN_SOURCES)
+        guide = research_guides.get(verbatim, {})
 
+        # ① 평가요소 제목
         st.markdown(f"### 📌 {verbatim}")
         result_output += f"[{verbatim}]\n"
 
-        # Split sources into display buckets in a single pass
+        # ② 🧭 리서치 가이드
+        need_summary = guide.get("need_summary", "")
+        material_types = safe_get_list(guide, "material_types")
+        recommended_sources = safe_get_list(guide, "recommended_sources")
+
+        with st.container():
+            st.markdown("**🧭 리서치 가이드**")
+            if need_summary:
+                st.info(need_summary)
+                result_output += f"🧭 리서치 가이드\n  요구: {need_summary}\n"
+            if material_types:
+                st.markdown("**필요한 자료 유형:**")
+                for mt in material_types:
+                    st.markdown(f"  - {mt}")
+                result_output += "  자료 유형: " + ", ".join(material_types) + "\n"
+            if recommended_sources:
+                st.markdown("**추천 출처:**")
+                for rs in recommended_sources:
+                    name = rs.get("name", "") if isinstance(rs, dict) else str(rs)
+                    why = rs.get("why", "") if isinstance(rs, dict) else ""
+                    if name:
+                        st.markdown(f"  - **{name}**" + (f": {why}" if why else ""))
+                        result_output += f"  - {name}" + (f": {why}" if why else "") + "\n"
+
+        # ③ 🔎 추천 검색어
+        sq_ko = safe_get_list(guide, "search_queries_ko")
+        sq_en = safe_get_list(guide, "search_queries_en")
+
+        st.markdown("**🔎 추천 검색어**")
+        if sq_ko:
+            st.markdown("🇰🇷 **한글 검색어:**")
+            st.markdown("  ".join(f"`{q}`" for q in sq_ko))
+            result_output += "  한글 검색어: " + " / ".join(sq_ko) + "\n"
+        else:
+            st.caption("한글 검색어를 생성하지 못했습니다.")
+        if include_en and sq_en:
+            st.markdown("🌐 **영문 검색어:**")
+            st.markdown("  ".join(f"`{q}`" for q in sq_en))
+            result_output += "  영문 검색어: " + " / ".join(sq_en) + "\n"
+
+        # ④ 📎 링크 (부록 — expander)
         verified_b, unverified_b, a_sources = [], [], []
         for s in sources:
             if s.get("layer") == "B":
@@ -1557,42 +1749,43 @@ elif st.session_state["app_step"] == "results":
             else:
                 a_sources.append(s)
 
-        # Main list: verified B-layer first, then A-layer backup to fill min_sources
         needed_from_a = max(0, min_src - len(verified_b))
         a_fill = a_sources[:needed_from_a] if needed_from_a > 0 else []
-        # If no verified B links at all, show all A-layer
         if not verified_b:
             a_fill = a_sources
-
         main_sources = verified_b + a_fill
 
-        for i, src in enumerate(main_sources, 1):
-            title = src.get("title", "자료")
-            url = src.get("url", "#")
-            usage = src.get("usage", "")
-            is_direct = src.get("layer") == "B"
-            is_unvalidated = src.get("unvalidated", False)
-
-            layer_tag = " *(직링크)*" if is_direct else ""
-            unvalidated_tag = " ⚠️" if is_unvalidated else ""
-            st.markdown(f"- **자료 {i}**{layer_tag}{unvalidated_tag}: [{title}]({url})")
-            if is_unvalidated:
-                st.caption("  ⚠️ 링크 검증 불가 (네트워크 제한). 클릭 후 결과를 직접 확인하세요.")
-            if usage:
-                st.markdown(f"  → 활용 방식: {usage}")
-            result_output += f"- 자료 {i}: {title} ({url})\n"
-            if usage:
-                result_output += f"  → 활용 방식: {usage}\n"
-
-        # Unverified B-layer: show in collapsible section
+        link_label = f"📎 참고 링크 ({len(main_sources)}개"
         if unverified_b:
-            with st.expander(f"⚠️ 검증불가 직링크 {len(unverified_b)}개 (브라우저에서 직접 확인 필요)", expanded=False):
-                st.caption("아래 링크는 서버 환경 제한(봇 차단 등)으로 자동 검증이 불가했습니다. 브라우저에서 직접 열어 확인하세요.")
+            link_label += f" + 검증불가 {len(unverified_b)}개"
+        link_label += ") — 클릭하여 열기"
+
+        with st.expander(link_label, expanded=False):
+            for i, src in enumerate(main_sources, 1):
+                title = src.get("title", "자료")
+                url = src.get("url", "#")
+                usage = src.get("usage", "")
+                is_direct = src.get("layer") == "B"
+                is_unvalidated = src.get("unvalidated", False)
+                layer_tag = " *(직링크)*" if is_direct else ""
+                unvalidated_tag = " ⚠️" if is_unvalidated else ""
+                st.markdown(f"- **자료 {i}**{layer_tag}{unvalidated_tag}: [{title}]({url})")
+                if is_unvalidated:
+                    st.caption("  ⚠️ 링크 검증 불가 (네트워크 제한). 클릭 후 결과를 직접 확인하세요.")
+                if usage:
+                    st.markdown(f"  → 활용 방식: {usage}")
+                result_output += f"- 자료 {i}: {title} ({url})\n"
+                if usage:
+                    result_output += f"  → 활용 방식: {usage}\n"
+
+            if unverified_b:
+                st.markdown("---")
+                st.caption("⚠️ 아래 링크는 서버 환경 제한으로 자동 검증이 불가했습니다. 브라우저에서 직접 확인하세요.")
                 for src in unverified_b:
                     title = src.get("title", "자료")
                     url = src.get("url", "#")
                     usage = src.get("usage", "")
-                    st.markdown(f"- ⚠️ **검증불가(브라우저에서 확인)**: [{title}]({url})")
+                    st.markdown(f"- ⚠️ **검증불가**: [{title}]({url})")
                     if usage:
                         st.markdown(f"  → 활용 방식: {usage}")
 
