@@ -96,10 +96,8 @@ TRUSTED_DOMAINS = [
 
 # A-layer: template search result URLs (always valid, no LLM needed)
 SEARCH_TEMPLATES = [
-    ("RISS 검색",      "https://www.riss.kr/search/Search.do?searchGubun=true&queryText={q}"),
-    ("KCI 검색",       "https://www.kci.go.kr/kciportal/po/search/poSearch.kci?sereId=&queryText={q}"),
     ("Google Scholar", "https://scholar.google.com/scholar?q={q}"),
-    ("DBpia 검색",     "https://www.dbpia.co.kr/search/searchResult?searchCategory=ALL&query={q}"),
+    ("Wikipedia(ko) 검색", "https://ko.wikipedia.org/w/index.php?search={q}"),
 ]
 
 EXTRACT_SYSTEM = """당신은 수행평가 평가표(루브릭)에서 평가요소를 추출하는 전문가입니다.
@@ -983,13 +981,20 @@ def make_a_layer_sources(
         query_text = query2 if idx == 1 else query1
         q = quote_plus(query_text)
         url = template.format(q=q)
+        if "Wikipedia" in site_name:
+            usage = (
+                f"위키백과에서 핵심 개념/용어를 빠르게 파악합니다. "
+                f"(검색어: {query_text[:40]}{'…' if len(query_text) > 40 else ''})"
+            )
+        else:
+            usage = (
+                f"이 요소에 관한 자료를 {site_name}에서 검색하여 보고서에 활용합니다. "
+                f"(검색어: {query_text[:40]}{'…' if len(query_text) > 40 else ''})"
+            )
         sources.append({
             "title": f"{short}{suffix} — {site_name}",
             "url": url,
-            "usage": (
-                f"이 요소에 관한 자료를 {site_name}에서 검색하여 보고서에 활용합니다. "
-                f"(검색어: {query_text[:40]}{'…' if len(query_text) > 40 else ''})"
-            ),
+            "usage": usage,
             "type": "검색결과",
             "layer": "A",
         })
